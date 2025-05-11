@@ -1121,4 +1121,84 @@ footer a {
 
 footer a:hover {
     text-decoration: underline;
+}
+
+/* 录制提示 */
+.recording-tip {
+    width: 100%;
+    margin: 5px 0 15px;
+    padding: 10px 15px;
+    background-color: #e3f2fd;
+    border-radius: 6px;
+    color: #0d47a1;
+    font-size: 14px;
+    display: flex;
+    align-items: center;
+    border-left: 4px solid #2196F3;
+}
+
+.recording-tip .tip-icon {
+    margin-right: 10px;
+    font-size: 18px;
+}
+
+body.dark-mode .recording-tip {
+    background-color: #1a2b40;
+    color: #90caf9;
+    border-left-color: #0d47a1;
+}
+
+/* 移动设备警告提示 */
+.mobile-warning {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(0, 0, 0, 0.8);
+    z-index: 9999;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    backdrop-filter: blur(5px);
+}
+
+.warning-content {
+    background-color: #fff;
+    padding: 20px;
+    border-radius: 10px;
+    max-width: 90%;
+    width: 400px;
+    text-align: center;
+    box-shadow: 0 5px 20px rgba(0, 0, 0, 0.3);
+}
+
+body.dark-mode .warning-content {
+    background-color: #212121;
+    color: #e0e0e0;
+}
+
+.warning-content h3 {
+    color: #f44336;
+    margin-top: 0;
+}
+
+body.dark-mode .warning-content h3 {
+    color: #ff7961;
+}
+
+.warning-close {
+    background-color: #f44336;
+    color: white;
+    border: none;
+    padding: 10px 20px;
+    border-radius: 50px;
+    margin-top: 15px;
+    cursor: pointer;
+    font-weight: 600;
+    transition: background-color 0.3s;
+}
+
+.warning-close:hover {
+    background-color: #d32f2f;
 } 

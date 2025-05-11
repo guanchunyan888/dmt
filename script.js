@@ -6,6 +6,11 @@ const audioVisualizer = document.getElementById('audio-visualizer');
 const audioPreview = document.getElementById('audio-preview');
 const themeToggle = document.getElementById('theme-toggle');
 
+// 检测是否为移动设备
+function isMobileDevice() {
+    return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+}
+
 // 预览容器
 const cameraContainer = document.getElementById('camera-preview-container');
 const screenContainer = document.getElementById('screen-preview-container');
@@ -1061,6 +1066,11 @@ function applyLayout(layoutName) {
             cameraContainer.style.transform = 'none';
             cameraContainer.style.zIndex = '2'; // 摄像头在顶层
             
+            // 添加半透明背景以使摄像头更明显
+            cameraContainer.style.backgroundColor = 'rgba(0, 0, 0, 0.3)';
+            cameraContainer.style.borderRadius = '8px';
+            cameraContainer.style.overflow = 'hidden';
+            
             showBordersCheckbox.checked = false;
             showTitlesCheckbox.checked = false;
             showCameraCheckbox.checked = true;
@@ -1575,6 +1585,17 @@ function startRecording() {
         return;
     }
     
+    // 检查视频元素是否准备好
+    if (screenStream && (!screenPreview.videoWidth || !screenPreview.videoHeight)) {
+        showError(document.getElementById('global-error'), '屏幕视频尚未准备好，请稍等几秒再尝试录制');
+        return;
+    }
+    
+    if (cameraStream && (!cameraPreview.videoWidth || !cameraPreview.videoHeight)) {
+        showError(document.getElementById('global-error'), '摄像头视频尚未准备好，请稍等几秒再尝试录制');
+        return;
+    }
+    
     try {
         // 记录录制开始时间
         const startTime = new Date();
@@ -1606,18 +1627,73 @@ function startRecording() {
         let recordStream;
         
         if (cameraStream && screenStream) {
-            // 合并两个视频流
-            const tracks = [
-                ...screenStream.getVideoTracks(),
-                ...cameraStream.getVideoTracks()
-            ];
+            // 使用Canvas合成两个视频流
+            const canvas = document.createElement('canvas');
+            const ctx = canvas.getContext('2d');
+            
+            // 设置Canvas大小与屏幕流一致
+            canvas.width = screenPreview.videoWidth || 1280;
+            canvas.height = screenPreview.videoHeight || 720;
+            
+            // 计算摄像头预览的位置和大小 (画中画效果)
+            // 防止除以零错误
+            let aspectRatio = 4/3; // 默认宽高比
+            if (cameraPreview.videoWidth && cameraPreview.videoHeight) {
+                aspectRatio = cameraPreview.videoHeight / cameraPreview.videoWidth;
+            }
+            
+            const camWidth = canvas.width / 4; // 摄像头宽度为屏幕宽度的1/4
+            const camHeight = camWidth * aspectRatio;
+            const camX = canvas.width - camWidth - 20; // 右下角
+            const camY = canvas.height - camHeight - 20;
+            
+            // 创建用于合成的媒体流
+            const compositeStream = canvas.captureStream(30); // 30fps
             
             // 添加音频轨道如果存在
             if (audioStream) {
-                tracks.push(...audioStream.getAudioTracks());
+                audioStream.getAudioTracks().forEach(track => {
+                    compositeStream.addTrack(track);
+                });
             }
             
-            recordStream = new MediaStream(tracks);
+            // 定义绘制函数 (在外部定义，防止在动画循环中重复创建)
+            const drawFrame = () => {
+                if (!isRecording) return;
+                
+                try {
+                    // 绘制屏幕共享
+                    ctx.fillStyle = '#000';
+                    ctx.fillRect(0, 0, canvas.width, canvas.height);
+                    
+                    if (screenStream && screenStream.active) {
+                        ctx.drawImage(screenPreview, 0, 0, canvas.width, canvas.height);
+                    }
+                    
+                    // 绘制摄像头画面 (画中画)
+                    if (cameraStream && cameraStream.active) {
+                        ctx.drawImage(cameraPreview, camX, camY, camWidth, camHeight);
+                        
+                        // 添加边框
+                        ctx.strokeStyle = '#fff';
+                        ctx.lineWidth = 2;
+                        ctx.strokeRect(camX, camY, camWidth, camHeight);
+                    }
+                    
+                    // 如果仍在录制，继续下一帧
+                    if (isRecording) {
+                        requestAnimationFrame(drawFrame);
+                    }
+                } catch (error) {
+                    console.error('绘制画面时出错:', error);
+                    stopRecording();
+                }
+            };
+            
+            // 开始绘制循环
+            requestAnimationFrame(drawFrame);
+            
+            recordStream = compositeStream;
         } else if (cameraStream) {
             recordStream = cameraStream;
             
@@ -1638,16 +1714,30 @@ function startRecording() {
             }
         }
         
-        // 设置录制选项
-        const options = { mimeType: 'video/webm;codecs=vp9,opus' };
-        
-        // 创建MediaRecorder实例
-        mediaRecorder = new MediaRecorder(recordStream, options);
+        // 设置录制选项 - 尝试使用兼容性更好的编码器
+        let options;
+        try {
+            options = { mimeType: 'video/webm;codecs=vp9,opus' };
+            mediaRecorder = new MediaRecorder(recordStream, options);
+        } catch (e) {
+            try {
+                options = { mimeType: 'video/webm;codecs=vp8,opus' };
+                mediaRecorder = new MediaRecorder(recordStream, options);
+            } catch (e) {
+                try {
+                    options = { mimeType: 'video/webm' };
+                    mediaRecorder = new MediaRecorder(recordStream, options);
+                } catch (e) {
+                    showError(document.getElementById('global-error'), '浏览器不支持WebM格式录制');
+                    return;
+                }
+            }
+        }
         
         // 收集录制的数据
         recordedChunks = [];
         mediaRecorder.ondataavailable = (e) => {
-            if (e.data.size > 0) {
+            if (e.data && e.data.size > 0) {
                 recordedChunks.push(e.data);
             }
         };
@@ -1662,20 +1752,35 @@ function startRecording() {
                 timeDisplay.parentNode.removeChild(timeDisplay);
             }
             
-            // 创建Blob并生成URL
-            const blob = new Blob(recordedChunks, { type: 'video/webm' });
-            const videoURL = URL.createObjectURL(blob);
+            // 检查是否有数据
+            if (recordedChunks.length === 0) {
+                showError(document.getElementById('global-error'), '未录制到任何数据');
+                isRecording = false;
+                recordVideoBtn.disabled = false;
+                stopRecordingBtn.disabled = true;
+                recordVideoBtn.classList.remove('active-record');
+                return;
+            }
             
-            // 创建视频输出
-            createVideoOutput(videoURL);
-            
-            // 重置状态
-            isRecording = false;
-            recordVideoBtn.disabled = false;
-            stopRecordingBtn.disabled = true;
-            
-            // 移除记录按钮的动画效果
-            recordVideoBtn.classList.remove('active-record');
+            try {
+                // 创建Blob并生成URL
+                const blob = new Blob(recordedChunks, { type: 'video/webm' });
+                const videoURL = URL.createObjectURL(blob);
+                
+                // 创建视频输出
+                createVideoOutput(videoURL);
+                
+                // 重置状态
+                isRecording = false;
+                recordVideoBtn.disabled = false;
+                stopRecordingBtn.disabled = true;
+                
+                // 移除记录按钮的动画效果
+                recordVideoBtn.classList.remove('active-record');
+            } catch (error) {
+                console.error('处理录制视频时出错:', error);
+                showError(document.getElementById('global-error'), '无法处理录制的视频: ' + error.message);
+            }
         };
         
         // 开始录制
@@ -1703,120 +1808,23 @@ function stopRecording() {
         return;
     }
     
-    mediaRecorder.stop();
-    showStatus(document.querySelector('.status-message'), '录制已停止');
-}
-
-// 创建视频输出
-function createVideoOutput(videoURL) {
-    // 创建输出容器
-    const outputItem = document.createElement('div');
-    outputItem.className = 'output-item';
-    
-    // 添加标题
-    const outputTitle = document.createElement('h3');
-    outputTitle.textContent = '录制视频';
-    outputItem.appendChild(outputTitle);
-    
-    // 添加时间戳
-    const timestamp = document.createElement('div');
-    timestamp.className = 'timestamp';
-    timestamp.textContent = new Date().toLocaleString();
-    outputItem.appendChild(timestamp);
-    
-    // 添加视频
-    const video = document.createElement('video');
-    video.src = videoURL;
-    video.controls = true;
-    video.style.width = '100%';
-    video.style.borderRadius = '4px';
-    video.style.marginTop = '10px';
-    outputItem.appendChild(video);
-    
-    // 添加下载按钮
-    const downloadBtn = document.createElement('button');
-    downloadBtn.className = 'download-button';
-    downloadBtn.textContent = '下载';
-    downloadBtn.addEventListener('click', () => {
-        const link = document.createElement('a');
-        link.href = videoURL;
-        link.download = '录制视频_' + new Date().toISOString().replace(/:/g, '-') + '.webm';
-        link.click();
-    });
-    outputItem.appendChild(downloadBtn);
-    
-    // 添加到输出区域
-    outputArea.insertBefore(outputItem, outputArea.firstChild);
-}
-
-// 设置音频可视化
-function setupAudioVisualizer(stream) {
-    // 创建音频上下文
-    if (!audioContext) {
-        audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    try {
+        // 停止录制器
+        mediaRecorder.stop();
+        
+        // 设置状态，通知绘制函数停止绘制
+        isRecording = false;
+        
+        showStatus(document.querySelector('.status-message'), '录制已停止');
+    } catch (error) {
+        console.error('停止录制时出错:', error);
+        showError(document.getElementById('global-error'), '停止录制时出错: ' + error.message);
+        
+        // 重置状态
+        isRecording = false;
+        recordVideoBtn.disabled = false;
+        stopRecordingBtn.disabled = true;
     }
-    
-    // 创建分析器
-    audioAnalyser = audioContext.createAnalyser();
-    audioAnalyser.fftSize = 256;
-    
-    // 连接音频流
-    const source = audioContext.createMediaStreamSource(stream);
-    source.connect(audioAnalyser);
-    
-    // 准备数据数组
-    const bufferLength = audioAnalyser.frequencyBinCount;
-    const dataArray = new Uint8Array(bufferLength);
-    
-    // 获取Canvas上下文
-    const canvas = audioVisualizer;
-    const canvasCtx = canvas.getContext('2d');
-    
-    // 绘制音频可视化
-    function draw() {
-        // 请求下一帧
-        const drawVisual = requestAnimationFrame(draw);
-        
-        // 如果音频流已停止，取消动画
-        if (!audioStream) {
-            cancelAnimationFrame(drawVisual);
-            canvasCtx.clearRect(0, 0, canvas.width, canvas.height);
-            return;
-        }
-        
-        // 获取频率数据
-        audioAnalyser.getByteFrequencyData(dataArray);
-        
-        // 清除画布
-        canvasCtx.fillStyle = 'rgb(0, 0, 0)';
-        canvasCtx.fillRect(0, 0, canvas.width, canvas.height);
-        
-        // 计算条形宽度
-        const barWidth = (canvas.width / bufferLength) * 2.5;
-        let barHeight;
-        let x = 0;
-        
-        // 绘制频谱
-        for (let i = 0; i < bufferLength; i++) {
-            barHeight = dataArray[i] / 2;
-            
-            // 根据高度选择颜色
-            const r = barHeight + 100;
-            const g = 200;
-            const b = 255;
-            
-            canvasCtx.fillStyle = `rgb(${r}, ${g}, ${b})`;
-            canvasCtx.fillRect(x, canvas.height - barHeight, barWidth, barHeight);
-            
-            x += barWidth + 1;
-        }
-    }
-    
-    // 开始绘制
-    draw();
-    
-    // 解除麦克风静音
-    audioPreview.muted = false;
 }
 
 // 设置主题模式功能
@@ -2019,6 +2027,32 @@ function updateUIForTheme(isDarkMode) {
 
 // 在DOMContentLoaded中初始化所有功能
 document.addEventListener('DOMContentLoaded', function() {
+    // 检查是否为移动设备
+    if (isMobileDevice()) {
+        // 创建警告元素
+        const mobileWarning = document.createElement('div');
+        mobileWarning.className = 'mobile-warning';
+        mobileWarning.innerHTML = `
+            <div class="warning-content">
+                <h3>⚠️ 移动设备访问受限</h3>
+                <p>抱歉，由于移动设备生态限制，本工具在移动设备上功能受限。</p>
+                <p>请使用桌面浏览器访问以获得完整体验。</p>
+                <button class="warning-close">我知道了</button>
+            </div>
+        `;
+        document.body.appendChild(mobileWarning);
+        
+        // 添加关闭按钮事件
+        const closeBtn = mobileWarning.querySelector('.warning-close');
+        closeBtn.addEventListener('click', function() {
+            mobileWarning.style.display = 'none';
+        });
+        
+        // 禁用屏幕共享按钮
+        document.getElementById('start-screen').disabled = true;
+        document.getElementById('start-screen').title = "移动设备不支持屏幕共享";
+    }
+    
     // 使所有预览区域可拖拽和调整大小
     document.querySelectorAll('.preview-area').forEach(area => {
         makeDraggable(area);
@@ -2071,3 +2105,45 @@ document.addEventListener('DOMContentLoaded', function() {
     // 初始化主题模式
     setupThemeMode();
 }); 
+
+// 创建视频输出
+function createVideoOutput(videoURL) {
+    // 创建输出容器
+    const outputItem = document.createElement('div');
+    outputItem.className = 'output-item';
+    
+    // 添加标题
+    const outputTitle = document.createElement('h3');
+    outputTitle.textContent = '录制视频';
+    outputItem.appendChild(outputTitle);
+    
+    // 添加时间戳
+    const timestamp = document.createElement('div');
+    timestamp.className = 'timestamp';
+    timestamp.textContent = new Date().toLocaleString();
+    outputItem.appendChild(timestamp);
+    
+    // 添加视频
+    const video = document.createElement('video');
+    video.src = videoURL;
+    video.controls = true;
+    video.style.width = '100%';
+    video.style.borderRadius = '4px';
+    video.style.marginTop = '10px';
+    outputItem.appendChild(video);
+    
+    // 添加下载按钮
+    const downloadBtn = document.createElement('button');
+    downloadBtn.className = 'download-button';
+    downloadBtn.textContent = '下载';
+    downloadBtn.addEventListener('click', () => {
+        const link = document.createElement('a');
+        link.href = videoURL;
+        link.download = '录制视频_' + new Date().toISOString().replace(/:/g, '-') + '.webm';
+        link.click();
+    });
+    outputItem.appendChild(downloadBtn);
+    
+    // 添加到输出区域
+    outputArea.insertBefore(outputItem, outputArea.firstChild);
+} 
